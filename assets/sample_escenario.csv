@@ -1,0 +1,5 @@
+type,bond_id,nombre,valor_nominal,tasa_cupon_anual,frecuencia_anual,vencimiento_anios,spread_bps,callable,precio_call,round,delta_tasa_bps,impacto_bps,descripcion
+BOND,B1,Bono 1,1000,0.08,2,3,150,FALSE,,,
+BOND,B2,Bono 2,1000,0.06,2,5,120,FALSE,,,
+MARKET,,,,,,,,,,1,50,,Shock tasa +50bps
+IDIOS,B1,,,,,,,,,1,,30,Idios B1 +30bps
