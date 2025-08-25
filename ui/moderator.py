@@ -16,14 +16,18 @@ def render_moderator(state: dict):
         st.caption("(Próxima iteración) Cargar a Google Sheets")
 
     if uploaded:
+    try:
         bonds, events = parse_scenario_csv(uploaded)
-        state["bonds"] = bonds
-        state["events"] = events
-        toast_ok(f"Escenario cargado: {len(bonds)} bonos, {len(events)} eventos")
-    else:
-        # Mostrar cualquier dataset existente
-        bonds = state.get("bonds", [])
-        events = state.get("events", [])
+        state["bonds"], state["events"] = bonds, events
+        st.success(f"Escenario cargado: {len(bonds)} bonos, {len(events)} eventos", icon="✅")
+    except Exception as e:
+        st.error("No se pudo leer el CSV. Revisa cabeceras y separador (, ; o tab).", icon="⚠️")
+        st.exception(e)
+        st.stop()
+else:
+    # Mostrar cualquier dataset existente
+    bonds = state.get("bonds", [])
+    events = state.get("events", [])
 
     tab1, tab2, tab3 = st.tabs(["Bonos", "Eventos", "Publicar precios"])
 
