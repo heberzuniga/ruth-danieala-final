@@ -7,7 +7,7 @@ from ui.participant import render_participant
 
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 
-# Init defaults into session_state
+# Inicializa defaults en session_state
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
         st.session_state[k] = v
