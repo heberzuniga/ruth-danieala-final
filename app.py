@@ -1,8 +1,9 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import io, csv, math
+import io, csv, math, time
 from datetime import datetime
+import streamlit.components.v1 as components
 
 # ==============================
 # STORE COMPARTIDO (por game_code)
@@ -227,7 +228,7 @@ def portfolio_value(teams, bonds_df, prices_dict, orders):
 # Estado inicial
 # ==============================
 APP_TITLE = "Misión Bonos — Competencia"
-APP_VERSION = "1.1.0 (multisesión)"
+APP_VERSION = "1.2.0 (multisesión + autosync)"
 
 DEFAULTS = dict(
     # persistencia de rol y equipo actual (por sesión)
@@ -272,6 +273,7 @@ with st.sidebar:
     state["game_code"] = st.text_input("Game Code", value=state["game_code"])
     st.caption("Cada equipo usa el mismo Game Code.")
     st.markdown("---")
+    autosync = st.checkbox("Auto-sync cada 2s (recarga la pestaña)", value=False, key="autosync_global")
 
 # ¡Muy importante!
 # Trae del STORE compartido lo que haya para este game_code (precios, round, etc.)
@@ -279,11 +281,33 @@ sync_from_store_to_state()
 
 st.title(f"{APP_TITLE} · v{APP_VERSION}")
 
+# Auto-sync opcional (refresca la pestaña cada 2 segundos)
+if autosync:
+    components.html(
+        "<script>setTimeout(function(){window.parent.location.reload()}, 2000);</script>",
+        height=0,
+    )
+
 # ==============================
 # Moderador
 # ==============================
 def ui_moderator():
     st.subheader("Panel del Moderador")
+
+    # Botón Forzar sync
+    col_sync, _ = st.columns([1,6])
+    if col_sync.button("🔄 Forzar sync", key="force_sync_mod"):
+        sync_from_store_to_state()
+        st.experimental_rerun()
+
+    # Banner de estado
+    st.info(
+        f"Game Code: **{state.game_code}** | Ronda: **{state.round}** | "
+        f"Trading ON: **{bool(state.get('trading_on', False))}** | "
+        f"Bonos: **{0 if state.bonds is None else len(state.bonds)}** | "
+        f"Precios: **{len(state.prices)}**"
+    )
+
     with st.expander("1) Escenario (CSV) — o usa un ejemplo", expanded=True):
         up = st.file_uploader(
             "CSV de bonos (cabeceras mínimas: bond_id,nombre,valor_nominal,tasa_cupon_anual,frecuencia_anual,vencimiento_anios,spread_bps,callable,precio_call)",
@@ -422,8 +446,20 @@ def compute_leaderboard_current():
 # ==============================
 def ui_participant():
     st.subheader("Panel del Participante")
-    # Línea de estado útil para verificar sincronización
-    st.caption(f"Estado → ronda: {state.round} | trading_on: {bool(state.get('trading_on', False))} | bonos: {0 if state.bonds is None else len(state.bonds)} | precios: {len(state.prices)}")
+
+    # Botón Forzar sync
+    col_sync, _ = st.columns([1,6])
+    if col_sync.button("🔄 Forzar sync", key="force_sync_part"):
+        sync_from_store_to_state()
+        st.experimental_rerun()
+
+    # Banner de estado
+    st.info(
+        f"Game Code: **{state.game_code}** | Ronda: **{state.round}** | "
+        f"Trading ON: **{bool(state.get('trading_on', False))}** | "
+        f"Bonos: **{0 if state.bonds is None else len(state.bonds)}** | "
+        f"Precios: **{len(state.prices)}**"
+    )
 
     c1,c2 = st.columns(2)
     team = c1.text_input("Nombre de equipo", value=state.get("current_team",""), key="team_name")
@@ -474,7 +510,7 @@ def ui_participant():
     st.markdown("### Mis posiciones / valor (mid)")
     team_name = state.get("current_team","")
     my = [od for od in state.orders if od["team"]==team_name]
-    if my:
+    if my and state.bonds is not None:
         pos, cash, _ = compute_positions(my)
         rows=[]
         for b in state.bonds["bond_id"]:
