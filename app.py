@@ -5,6 +5,47 @@ import io, csv, math
 from datetime import datetime
 
 # ==============================
+# STORE COMPARTIDO (por game_code)
+# ==============================
+@st.cache_resource
+def _get_game_store():
+    # Un único dict (por proceso) para compartir estado entre pestañas
+    # Nota: si hay múltiples réplicas de servidor, cada una tendrá su store.
+    return {}
+
+def _store_ref():
+    store = _get_game_store()
+    gc = st.session_state.get("game_code", "MB-001")
+    if gc not in store:
+        store[gc] = {
+            "round": 0,
+            "prices": {},
+            "orders": [],
+            "teams": set(),
+            "bonds": None,
+            "events": None,
+            "trading_on": False,
+        }
+    return store[gc]
+
+def sync_from_store_to_state():
+    """Lectura: trae al estado local lo que haya en el store para este game_code."""
+    ref = _store_ref()
+    state.round       = ref["round"]
+    state.prices      = ref["prices"]
+    state.orders      = ref["orders"]
+    state.teams       = ref["teams"]
+    state.bonds       = ref["bonds"]
+    state.events      = ref["events"]
+    state.trading_on  = ref["trading_on"]
+
+def flush_state_to_store(keys: list[str]):
+    """Escritura: persiste al store compartido las claves modificadas."""
+    ref = _store_ref()
+    for k in keys:
+        ref[k] = getattr(state, k)
+
+# ==============================
 # Helpers CSV robusto (coma/; | UTF-8/latin-1 | BOM)
 # ==============================
 def _to_text(file_like):
@@ -186,13 +227,13 @@ def portfolio_value(teams, bonds_df, prices_dict, orders):
 # Estado inicial
 # ==============================
 APP_TITLE = "Misión Bonos — Competencia"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.1.0 (multisesión)"
 
 DEFAULTS = dict(
-    # ---- NUEVO: persistencia de rol y equipo actual ----
+    # persistencia de rol y equipo actual (por sesión)
     role="Moderador",
     current_team="",
-    # ----------------------------------------------------
+    # parámetros de juego
     game_code="MB-001",
     frac_anio=0.25,
     base_rate=0.00,
@@ -205,11 +246,13 @@ DEFAULTS = dict(
     teams=set(),         # set de team_names
     bonds=None,
     events=None,
-    liquidity_widen_bp=10 # ensanchamiento adicional en evento 3
+    trading_on=False,
+    liquidity_widen_bp=10
 )
 
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 
+# Inicializa estado local
 for k,v in DEFAULTS.items():
     if k not in st.session_state:
         st.session_state[k]=v
@@ -224,11 +267,15 @@ with st.sidebar:
         "Rol",
         ["Moderador","Participante"],
         index=["Moderador","Participante"].index(state.get("role","Moderador")),
-        key="role"  # <-- persistencia real del rol
+        key="role"
     )
     state["game_code"] = st.text_input("Game Code", value=state["game_code"])
     st.caption("Cada equipo usa el mismo Game Code.")
     st.markdown("---")
+
+# ¡Muy importante!
+# Trae del STORE compartido lo que haya para este game_code (precios, round, etc.)
+sync_from_store_to_state()
 
 st.title(f"{APP_TITLE} · v{APP_VERSION}")
 
@@ -251,6 +298,7 @@ def ui_moderator():
                     try:
                         df = load_bonds_csv(up)
                         state.bonds = df
+                        flush_state_to_store(["bonds"])   # <-- STORE
                         st.success(f"Cargados {len(df)} bonos.")
                     except Exception as e:
                         st.error("No se pudo leer el CSV.")
@@ -263,6 +311,7 @@ B2,Bono Corp AAA 5y,1000,0.05,2,5,120,TRUE,1020,Callable
 B3,Bono HY 4y,1000,0.08,4,4,300,FALSE,,High Yield
 """
                 state.bonds = load_bonds_csv(sample_csv)
+                flush_state_to_store(["bonds"])       # <-- STORE
                 st.success("Ejemplo cargado.")
 
         if state.bonds is not None:
@@ -277,7 +326,7 @@ B3,Bono HY 4y,1000,0.08,4,4,300,FALSE,,High Yield
         c5,c6,c7 = st.columns(3)
         state.fee_bps  = c5.number_input("Comisión (bps)", value=int(state.fee_bps), step=1)
         state.liquidity_widen_bp = c6.number_input("Widening de liquidez en Evento 3 (bps)", value=int(state.liquidity_widen_bp), step=1)
-        st.caption("Comisiones aplican a notional ejecutado; widening de liquidez ensancha bid/ask en el evento 3.")
+        st.caption("Comisiones aplican a notional ejecutado; widening ensancha bid/ask en el evento 3.")
 
         st.markdown("**Configura los 3 eventos**")
         e1 = st.slider("Evento 1: Shock de tasa (market, bps)", -150, 150, 50, step=5)
@@ -287,6 +336,7 @@ B3,Bono HY 4y,1000,0.08,4,4,300,FALSE,,High Yield
 
         if state.bonds is not None:
             state.events = propose_events(state.bonds, e1, e2, e3_good, e3_rest)
+            flush_state_to_store(["events"])  # <-- STORE
             st.dataframe(pd.DataFrame(state.events), use_container_width=True)
 
     with st.expander("3) Publicar evento / abrir trading", expanded=True):
@@ -295,9 +345,12 @@ B3,Bono HY 4y,1000,0.08,4,4,300,FALSE,,High Yield
         if c1.button("Publicar siguiente evento", disabled=disabled):
             publish_next_event()
         trading = c2.toggle("Trading ON", value=(state.get("trading_on", False) and state.round>0), disabled=(state.round==0))
-        state.trading_on = trading
+        if trading != state.get("trading_on", False):
+            state.trading_on = trading
+            flush_state_to_store(["trading_on"])  # <-- STORE
         if c3.button("Finalizar Juego (calcular ranking)", disabled=(state.round<3)):
             state.trading_on = False
+            flush_state_to_store(["trading_on"])  # <-- STORE
             st.success("Juego finalizado. Ranking disponible abajo.")
 
     st.markdown("### Orders")
@@ -319,7 +372,6 @@ def publish_next_event():
     prices = {}
     widen = state.liquidity_widen_bp if round_target==3 else 0
 
-    # función auxiliar para MIXTO
     def parse_good_rest():
         good_bps, rest_bps = -30, 30
         try:
@@ -332,7 +384,6 @@ def publish_next_event():
             pass
         return good_bps, rest_bps
 
-    # calcular precios
     for _,row in state.bonds.iterrows():
         market_bps = 0.0
         idios_bps  = 0.0
@@ -356,6 +407,7 @@ def publish_next_event():
     state.prices = prices
     state.round = round_target
     state.trading_on = True
+    flush_state_to_store(["prices", "round", "trading_on"])  # <-- STORE
     st.success(f"Evento {state.round} publicado: {evt['descripcion']}")
 
 def compute_leaderboard_current():
@@ -370,6 +422,9 @@ def compute_leaderboard_current():
 # ==============================
 def ui_participant():
     st.subheader("Panel del Participante")
+    # Línea de estado útil para verificar sincronización
+    st.caption(f"Estado → ronda: {state.round} | trading_on: {bool(state.get('trading_on', False))} | bonos: {0 if state.bonds is None else len(state.bonds)} | precios: {len(state.prices)}")
+
     c1,c2 = st.columns(2)
     team = c1.text_input("Nombre de equipo", value=state.get("current_team",""), key="team_name")
     if c2.button("Registrar / Entrar"):
@@ -377,7 +432,8 @@ def ui_participant():
             st.warning("Ingresa un nombre de equipo.")
         else:
             state.teams.add(team.strip())
-            state.current_team = team.strip()  # <-- persistimos el equipo
+            state.current_team = team.strip()
+            flush_state_to_store(["teams"])  # <-- STORE
             st.success(f"Equipo '{team}' registrado.")
     if state.get("current_team"):
         st.info(f"Equipo actual: **{state.current_team}**")
@@ -385,8 +441,8 @@ def ui_participant():
     st.caption("Cash inicial: 100,000 (moneda ficticia).")
 
     st.markdown("### Precios actuales")
-    if state.round==0:
-        st.info("Aún no hay evento publicado. Espera al Moderador.")
+    if state.round==0 or not state.prices:
+        st.info("Aún no hay evento publicado o no hay precios disponibles.")
     else:
         dfp = pd.DataFrame.from_dict(state.prices, orient="index").reset_index().rename(columns={"index":"bond_id"})
         st.dataframe(dfp, use_container_width=True)
@@ -412,6 +468,7 @@ def ui_participant():
                     od = dict(ts=datetime.utcnow().isoformat(), team=team_name, bond_id=bond_id, side=side,
                               qty=qty, price_exec=px_exec, fees=round(fee,2), ronda=state.round)
                     state.orders.append(od)
+                    flush_state_to_store(["orders"])  # <-- STORE
                     st.success("Orden ejecutada.")
 
     st.markdown("### Mis posiciones / valor (mid)")
@@ -436,7 +493,7 @@ def ui_participant():
 # ==============================
 # Router principal
 # ==============================
-if role == "Moderador":
+if state.role == "Moderador":
     ui_moderator()
 else:
     ui_participant()
